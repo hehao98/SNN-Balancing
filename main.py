@@ -7,11 +7,12 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from torch import nn
 from spikingjelly.clock_driven import neuron, functional
+import numpy as np
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
-TIME, V_THR, V_RESET = 10000, 1.0, 0.0
+TIME, V_THR, V_RESET = 100, 1.0, 0.0
 
 
 def get_mnist():
@@ -153,9 +154,14 @@ def model_norm(layer: nn.Linear or nn.Conv2d):
     return nn.Parameter(weight)
 
 
-def data_norm(layer: nn.Linear, factor: float = 1.0):
+def data_norm(layer: nn.Linear, act:np.ndarray, previous_factor: float = 1.0):
     """TODO: Implement"""
-    return nn.Parameter(torch.clone(layer.weight))
+    max_wt = torch.max(layer.weight)
+    max_act = np.max(act)
+    scale_factor  =  max(max_wt,  max_act) 
+    applied_factor  =  scale_factor  /  previous_factor 
+    weight = layer.weight /  applied_factor
+    return nn.Parameter(torch.clone(weight)), scale_factor
 
 
 def eval_snn(model_snn, test_data):
@@ -181,6 +187,29 @@ def eval_snn(model_snn, test_data):
     logging.info(f"Converge time: {len(correct_sum) - len(num_same_elements)}")
     return [x / y for x, y in zip(correct_sum, test_sum)]
 
+def get_each_layer(model, data, layer_nos):
+
+    output = [] 
+    x = data
+    for i in range(len(model)):
+        x = model[i](x)
+        if i in layer_nos:
+            output.append(x.cpu().numpy())
+    return output 
+
+def get_train_act(model, train_data):
+    all_output_0 = []
+    all_output_1 = []
+    all_output_2 = []
+    for img, label in tqdm(train_data):
+        output = get_each_layer(model, img)
+        all_output_0.append(output[0])
+        all_output_1.append(output[1])
+        all_output_2.append(output[2])
+    all_output_0 = np.concatenate(all_output_0, axis = 0)
+    all_output_1 = np.concatenate(all_output_1, axis = 0)
+    all_output_2 = np.concatenate(all_output_2, axis = 0)
+    return [all_output_0, all_output_1, all_output_2]
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -196,6 +225,7 @@ if __name__ == "__main__":
     model_cnn, perf = get_trained_model(mnist_train, mnist_test, "cnn")
     logging.info(f"Using CNN with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
 
+    
     with torch.no_grad():
         logging.info("MLP copy weight directly:")
         model_snn = get_snn_mlp_model()
@@ -218,11 +248,13 @@ if __name__ == "__main__":
 
         logging.info("MLP copy weight with data based normalization:")
         model_snn = get_snn_mlp_model()
-        model_snn[1].weight = data_norm(model_mlp[1])
-        model_snn[3].weight = data_norm(model_mlp[4])
-        model_snn[5].weight = data_norm(model_mlp[7])
+        all_act = get_train_act(model_mlp, mnist_train, (1, 4, 7))
+        scale_factor = 1
+        model_snn[1].weight, scale_factor = data_norm(model_mlp[1], all_act[0], scale_factor)
+        model_snn[3].weight, scale_factor = data_norm(model_mlp[4], all_act[1], scale_factor)
+        model_snn[5].weight, _ = data_norm(model_mlp[7], all_act[2], scale_factor)
         acc_data_norm = eval_snn(model_snn, mnist_test)
-        
+
         logging.info("CNN copy weight directly:")
         model_snn = get_snn_cnn_model()
         model_snn[0].weight = baseline_copy(model_cnn[0])
@@ -244,9 +276,11 @@ if __name__ == "__main__":
 
         logging.info("CNN copy weight with data based normalization:")
         model_snn = get_snn_cnn_model()
-        model_snn[0].weight = data_norm(model_cnn[0])
-        model_snn[3].weight = data_norm(model_cnn[4])
-        model_snn[7].weight = data_norm(model_cnn[9])
+        all_act = get_train_act(model_cnn, mnist_train, (0, 4, 9))
+        scale_factor = 1
+        model_snn[0].weight, scale_factor = data_norm(model_cnn[0], all_act[0], scale_factor)
+        model_snn[3].weight, scale_factor = data_norm(model_cnn[4], all_act[1], scale_factor)
+        model_snn[7].weight, _ = data_norm(model_cnn[9], all_act[2], scale_factor)
         acc_data_norm2 = eval_snn(model_snn, mnist_test)
 
     with open("result.json", "w") as f:
