@@ -12,7 +12,7 @@ import numpy as np
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
-TIME, V_THR, V_RESET = 100, 1.0, 0.0
+TIME, V_THR, V_RESET = 10000, 1.0, 0.0
 
 
 def get_mnist():
@@ -154,13 +154,12 @@ def model_norm(layer: nn.Linear or nn.Conv2d):
     return nn.Parameter(weight)
 
 
-def data_norm(layer: nn.Linear, act:np.ndarray, previous_factor: float = 1.0):
-    """TODO: Implement"""
+def data_norm(layer: nn.Linear, act: np.ndarray, previous_factor: float = 1.0):
     max_wt = torch.max(layer.weight)
     max_act = np.max(act)
-    scale_factor  =  max(max_wt,  max_act) 
-    applied_factor  =  scale_factor  /  previous_factor 
-    weight = layer.weight /  applied_factor
+    scale_factor = max(max_wt, max_act) 
+    applied_factor = scale_factor / previous_factor 
+    weight = layer.weight / applied_factor
     return nn.Parameter(torch.clone(weight)), scale_factor
 
 
@@ -184,11 +183,11 @@ def eval_snn(model_snn, test_data):
             num_same_elements += 1
         else:
             break
-    logging.info(f"Converge time: {len(correct_sum) - len(num_same_elements)}")
+    logging.info(f"Converge time: {len(correct_sum) - num_same_elements}")
     return [x / y for x, y in zip(correct_sum, test_sum)]
 
-def get_each_layer(model, data, layer_nos):
 
+def get_each_layer(model, data, layer_nos):
     output = [] 
     x = data
     for i in range(len(model)):
@@ -197,12 +196,13 @@ def get_each_layer(model, data, layer_nos):
             output.append(x.cpu().numpy())
     return output 
 
-def get_train_act(model, train_data):
+
+def get_train_act(model, train_data, layer_nos):
     all_output_0 = []
     all_output_1 = []
     all_output_2 = []
     for img, label in tqdm(train_data):
-        output = get_each_layer(model, img)
+        output = get_each_layer(model, img, layer_nos)
         all_output_0.append(output[0])
         all_output_1.append(output[1])
         all_output_2.append(output[2])
@@ -210,6 +210,7 @@ def get_train_act(model, train_data):
     all_output_1 = np.concatenate(all_output_1, axis = 0)
     all_output_2 = np.concatenate(all_output_2, axis = 0)
     return [all_output_0, all_output_1, all_output_2]
+
 
 if __name__ == "__main__":
     logging.basicConfig(
@@ -225,7 +226,6 @@ if __name__ == "__main__":
     model_cnn, perf = get_trained_model(mnist_train, mnist_test, "cnn")
     logging.info(f"Using CNN with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
 
-    
     with torch.no_grad():
         logging.info("MLP copy weight directly:")
         model_snn = get_snn_mlp_model()
