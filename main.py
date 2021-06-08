@@ -45,8 +45,10 @@ def get_model_mlp():
 
 def get_model_cnn():
     model_cnn = nn.Sequential(
-        nn.Conv2d(1, 12, kernel_size=5, bias=False), nn.AvgPool2d(2), nn.ReLU(), nn.Dropout(0.1), 
-        nn.Conv2d(12, 64, kernel_size=5, bias=False), nn.AvgPool2d(2), nn.ReLU(), nn.Dropout(0.1),
+        nn.Conv2d(1, 12, kernel_size=5, bias=False), nn.AvgPool2d(2), 
+        nn.ReLU(), nn.Dropout(0.1), 
+        nn.Conv2d(12, 64, kernel_size=5, bias=False), nn.AvgPool2d(2), 
+        nn.ReLU(), nn.Dropout(0.1),
         nn.Flatten(),
         nn.Linear(1024, 10, bias=False))
     model_cnn.apply(init_weights)
@@ -145,8 +147,6 @@ def model_norm(layer: nn.Linear or nn.Conv2d):
     max_pos_input = 0
     for neuron in weight:
         input_sum = torch.maximum(neuron, torch.zeros_like(neuron)).sum()
-        #for input_wt in neuron:
-        #    input_sum += max(0, float(input_wt))
         max_pos_input = max(max_pos_input, input_sum)
     weight = weight / max_pos_input
     logging.info(f"Scaled layer {layer} by factor {1/max_pos_input:.4f}")
@@ -172,6 +172,13 @@ def eval_snn(model_snn, test_data):
         functional.reset_net(model_snn)
     for i in range(0, TIME, TIME // 10):
         logging.info(f"SNN t = {i}:　test_acc = {correct_sum[i] / test_sum[i]:.4f}")
+    num_same_elements = 1
+    for i in range(len(correct_sum) - 2, -1, -1):
+        if abs(correct_sum[i] - correct_sum[i + 1]) < 0.00005:
+            num_same_elements += 1
+        else:
+            break
+    logging.info(f"Converge time: {len(correct_sum) - len(num_same_elements)}")
     return [x / y for x, y in zip(correct_sum, test_sum)]
 
 
@@ -191,6 +198,11 @@ if __name__ == "__main__":
 
     with torch.no_grad():
         logging.info("MLP copy weight directly:")
+        model_snn = get_snn_mlp_model()
+        model_snn[1].weight = baseline_copy(model_mlp[1])
+        model_snn[3].weight = baseline_copy(model_mlp[4])
+        model_snn[5].weight = baseline_copy(model_mlp[7])
+        acc_baseline = eval_snn(model_snn, mnist_test)
         model_snn = get_snn_mlp_model(v_thr=4.0)
         model_snn[1].weight = baseline_copy(model_mlp[1])
         model_snn[3].weight = baseline_copy(model_mlp[4])
@@ -212,6 +224,11 @@ if __name__ == "__main__":
         acc_data_norm = eval_snn(model_snn, mnist_test)
         
         logging.info("CNN copy weight directly:")
+        model_snn = get_snn_cnn_model()
+        model_snn[0].weight = baseline_copy(model_cnn[0])
+        model_snn[3].weight = baseline_copy(model_cnn[4])
+        model_snn[7].weight = baseline_copy(model_cnn[9])
+        acc_baseline2 = eval_snn(model_snn, mnist_test)
         model_snn = get_snn_cnn_model(v_thr=20.0)
         model_snn[0].weight = baseline_copy(model_cnn[0])
         model_snn[3].weight = baseline_copy(model_cnn[4])
