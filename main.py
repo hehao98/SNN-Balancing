@@ -10,7 +10,7 @@ from spikingjelly.clock_driven import neuron, functional
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
-TIME, V_THR, V_RESET = 100, 5.0, 0.0
+TIME, V_THR, V_RESET = 5000, 1.0, 0.0
 
 
 def get_mnist():
@@ -37,7 +37,7 @@ def get_model_mlp():
         nn.Flatten(),
         nn.Linear(784, 1200, bias=False), nn.ReLU(), nn.Dropout(0.5),
         nn.Linear(1200, 1200, bias=False), nn.ReLU(), nn.Dropout(0.5),
-        nn.Linear(1200, 10))
+        nn.Linear(1200, 10, bias=False))
     model_mlp.apply(init_weights)
     return model_mlp.to(DEVICE)
 
@@ -98,16 +98,35 @@ def get_trained_model_mlp(train_data, test_data):
     return model_mlp, perf
 
 
+def get_snn_mlp_model(v_thr=V_THR, v_reset=V_RESET):
+    model_snn = nn.Sequential(
+        nn.Flatten(),
+        nn.Linear(784, 1200, bias=False),
+        neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
+        nn.Linear(1200, 1200, bias=False),
+        neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
+        nn.Linear(1200, 10, bias=False)).to(DEVICE)
+    return model_snn
+
+
 def baseline_copy(layer: nn.Linear):
     return nn.Parameter(torch.clone(layer.weight))
 
 
 def model_norm(layer: nn.Linear):
-    """TODO: Implement"""
-    return nn.Parameter(torch.clone(layer.weight))
+    weight = torch.clone(layer.weight)
+    max_pos_input = 0
+    for neuron in weight:
+        input_sum = torch.maximum(neuron, torch.zeros_like(neuron)).sum()
+        #for input_wt in neuron:
+        #    input_sum += max(0, float(input_wt))
+        max_pos_input = max(max_pos_input, input_sum)
+    weight = weight / max_pos_input
+    logging.info(f"Scaled layer {layer} by factor {1/max_pos_input:.4f}")
+    return nn.Parameter(weight)
 
 
-def data_norm(layer: nn.Linear):
+def data_norm(layer: nn.Linear, factor: float = 1.0):
     """TODO: Implement"""
     return nn.Parameter(torch.clone(layer.weight))
 
@@ -140,39 +159,35 @@ if __name__ == "__main__":
     model_mlp, perf = get_trained_model_mlp(mnist_train, mnist_test)
     logging.info(f"Using MLP with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
 
-    model_snn = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(784, 1200, bias=False),
-        neuron.IFNode(v_threshold=V_THR, v_reset=V_RESET),
-        nn.Linear(1200, 1200, bias=False),
-        neuron.IFNode(v_threshold=V_THR, v_reset=V_RESET),
-        nn.Linear(1200, 10)).to(DEVICE)
-
     with torch.no_grad():
         logging.info("Copy weight directly:")
+        model_snn = get_snn_mlp_model(v_thr=4.0)
         model_snn[1].weight = baseline_copy(model_mlp[1])
         model_snn[3].weight = baseline_copy(model_mlp[4])
         model_snn[5].weight = baseline_copy(model_mlp[7])
         acc_baseline = eval_snn(model_snn, mnist_test)
 
         logging.info("Copy weight with model based normalization:")
+        model_snn = get_snn_mlp_model()
         model_snn[1].weight = model_norm(model_mlp[1])
         model_snn[3].weight = model_norm(model_mlp[4])
         model_snn[5].weight = model_norm(model_mlp[7])
         acc_model_norm = eval_snn(model_snn, mnist_test)
 
         logging.info("Copy weight with data based normalization:")
+        model_snn = get_snn_mlp_model()
         model_snn[1].weight = data_norm(model_mlp[1])
         model_snn[3].weight = data_norm(model_mlp[4])
         model_snn[5].weight = data_norm(model_mlp[7])
         acc_data_norm = eval_snn(model_snn, mnist_test)
     
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-    ax.plot(acc_baseline, label="Baseline (Direct Copy)", linestyle=":")
-    ax.plot(acc_model_norm, label="Model-Based Normalization", linestyle="--")
-    ax.plot(acc_data_norm, label="Data-Based Normalization", linestyle="-.")
+    ax.plot([100 * (1 - x) for x in acc_baseline], label="Baseline (Direct Copy, v_thr = 4.0)", linestyle=":")
+    ax.plot([100 * (1 - x) for x in acc_model_norm], label="Model-Based Normalization", linestyle="--")
+    ax.plot([100 * (1 - x) for x in acc_data_norm], label="Data-Based Normalization", linestyle="-.")
     ax.set_xlabel("Time")
-    ax.set_ylabel("Test Accuracy")
+    ax.set_yscale("log")
+    ax.set_ylabel("Test Error (%)")
     ax.set_title(f"Performance Overview\n"
               f"MLP (epochs = {EPOCHS}, batch = {BATCH_SIZE}, lr = {LR}, momentum = {MOMENTNUM})\n"
               f"SNN (timesteps = {TIME}, v_thr = {V_THR}, v_reset = {V_RESET})")
