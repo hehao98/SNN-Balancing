@@ -3,11 +3,13 @@ import json
 import logging
 import torch
 import torchvision
-import torch.nn as nn
+from torch import nn
+from spikingjelly.clock_driven import neuron, functional
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
+TIME, V_THR, V_RESET = 100, 1.0, 0.0
 
 
 def get_mnist():
@@ -106,4 +108,29 @@ if __name__ == "__main__":
     model_mlp, perf = get_trained_model_mlp(mnist_train, mnist_test)
     logging.info(f"Using MLP with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
 
+    model_snn = nn.Sequential(
+        nn.Flatten(),
+        nn.Linear(784, 1200, bias=False),
+        neuron.IFNode(v_threshold=V_THR, v_reset=V_RESET),
+        nn.Linear(1200, 1200, bias=False),
+        neuron.IFNode(v_threshold=V_THR, v_reset=V_RESET),
+        nn.Linear(1200, 10)).to(DEVICE)
+
+    with torch.no_grad():
+        model_snn[1].weight = nn.Parameter(torch.clone(model_mlp[1].weight))
+        model_snn[3].weight = nn.Parameter(torch.clone(model_mlp[4].weight))
+        model_snn[5].weight = nn.Parameter(torch.clone(model_mlp[7].weight))
+
+        test_sum = 0
+        correct_sum = 0
+        for img, label in mnist_test:
+            for t in range(TIME):
+                if t == 0:
+                    out_spikes_counter = model_snn(img)
+                else:
+                    out_spikes_counter += model_snn(img)
+            correct_sum += (out_spikes_counter.max(1)[1] == label).float().sum().item()
+            test_sum += label.numel()
+            functional.reset_net(model_snn)
+        logging.info(f"SNN test_acc = {correct_sum / test_sum:.4f}")
     
