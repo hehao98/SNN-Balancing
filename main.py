@@ -4,13 +4,14 @@ import logging
 import torch
 import torchvision
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 from torch import nn
 from spikingjelly.clock_driven import neuron, functional
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
-TIME, V_THR, V_RESET = 5000, 1.0, 0.0
+TIME, V_THR, V_RESET = 10000, 1.0, 0.0
 
 
 def get_mnist():
@@ -28,7 +29,7 @@ def get_mnist():
 
 
 def init_weights(m):
-    if type(m) == nn.Linear:
+    if type(m) == nn.Linear or type(m) == nn.Conv2d:
         nn.init.uniform_(m.weight, -0.1, 0.1)
 
 
@@ -40,6 +41,16 @@ def get_model_mlp():
         nn.Linear(1200, 10, bias=False))
     model_mlp.apply(init_weights)
     return model_mlp.to(DEVICE)
+
+
+def get_model_cnn():
+    model_cnn = nn.Sequential(
+        nn.Conv2d(1, 12, kernel_size=5, bias=False), nn.AvgPool2d(2), nn.ReLU(), nn.Dropout(0.1), 
+        nn.Conv2d(12, 64, kernel_size=5, bias=False), nn.AvgPool2d(2), nn.ReLU(), nn.Dropout(0.1),
+        nn.Flatten(),
+        nn.Linear(1024, 10, bias=False))
+    model_cnn.apply(init_weights)
+    return model_cnn.to(DEVICE)
 
 
 def accuracy(y_hat, y): 
@@ -81,21 +92,26 @@ def train(net, train_iter, test_iter, loss, num_epochs, updater):
     return ret
 
 
-def get_trained_model_mlp(train_data, test_data):
-    if os.path.exists("model_mlp.pt"):
-        model_mlp = torch.load("model_mlp.pt")
-        with open("model_mlp_perf.json", "r") as f:
+def get_trained_model(train_data, test_data, model_type):
+    if os.path.exists(f"model_{model_type}.pt"):
+        model = torch.load(f"model_{model_type}.pt")
+        with open(f"model_{model_type}_perf.json", "r") as f:
             perf = json.load(f)
-        return model_mlp, perf
-    model_mlp = get_model_mlp()
+        return model, perf
+    if model_type == "mlp":
+        model = get_model_mlp()
+    elif model_type == "cnn":
+        model = get_model_cnn()
+    else:
+        raise ValueError("model_type should be mlp or cnn")
     loss = nn.CrossEntropyLoss()
-    trainer = torch.optim.SGD(model_mlp.parameters(), lr=LR, momentum=MOMENTNUM)
-    loss, train_acc, test_acc = train(model_mlp, train_data, test_data, loss, EPOCHS, trainer)
+    trainer = torch.optim.SGD(model.parameters(), lr=LR, momentum=MOMENTNUM)
+    loss, train_acc, test_acc = train(model, train_data, test_data, loss, EPOCHS, trainer)
     perf = { "loss": loss, "train_acc": train_acc, "test_acc": test_acc }
-    torch.save(model_mlp, "model_mlp.pt")
-    with open("model_mlp_perf.json", "w") as f:
+    torch.save(model, f"model_{model_type}.pt")
+    with open(f"model_{model_type}_perf.json", "w") as f:
         json.dump(perf, f, indent=2)
-    return model_mlp, perf
+    return model, perf
 
 
 def get_snn_mlp_model(v_thr=V_THR, v_reset=V_RESET):
@@ -105,15 +121,26 @@ def get_snn_mlp_model(v_thr=V_THR, v_reset=V_RESET):
         neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
         nn.Linear(1200, 1200, bias=False),
         neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
-        nn.Linear(1200, 10, bias=False)).to(DEVICE)
-    return model_snn
+        nn.Linear(1200, 10, bias=False))
+    return model_snn.to(DEVICE)
 
 
-def baseline_copy(layer: nn.Linear):
+def get_snn_cnn_model(v_thr=V_THR, v_reset=V_RESET):
+    model_snn = nn.Sequential(
+        nn.Conv2d(1, 12, kernel_size=5, bias=False), nn.AvgPool2d(2), 
+        neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
+        nn.Conv2d(12, 64, kernel_size=5, bias=False), nn.AvgPool2d(2), 
+        neuron.IFNode(v_threshold=v_thr, v_reset=v_reset),
+        nn.Flatten(),
+        nn.Linear(1024, 10, bias=False))
+    return model_snn.to(DEVICE)
+
+
+def baseline_copy(layer: nn.Linear or nn.Conv2d):
     return nn.Parameter(torch.clone(layer.weight))
 
 
-def model_norm(layer: nn.Linear):
+def model_norm(layer: nn.Linear or nn.Conv2d):
     weight = torch.clone(layer.weight)
     max_pos_input = 0
     for neuron in weight:
@@ -134,7 +161,7 @@ def data_norm(layer: nn.Linear, factor: float = 1.0):
 def eval_snn(model_snn, test_data):
     test_sum = [0] * TIME
     correct_sum = [0] * TIME
-    for img, label in test_data:
+    for img, label in tqdm(test_data):
         for t in range(TIME):
             if t == 0:
                 out_spikes_counter = model_snn(img)
@@ -156,42 +183,82 @@ if __name__ == "__main__":
     mnist_train, mnist_test = get_mnist()
     logging.info(f"train batches = {len(mnist_train)}, test batches = {len(mnist_test)}")
 
-    model_mlp, perf = get_trained_model_mlp(mnist_train, mnist_test)
+    model_mlp, perf = get_trained_model(mnist_train, mnist_test, "mlp")
     logging.info(f"Using MLP with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
 
+    model_cnn, perf = get_trained_model(mnist_train, mnist_test, "cnn")
+    logging.info(f"Using CNN with train_acc = {perf['train_acc'][-1]:.4f}, test_acc = {perf['test_acc'][-1]:.4f}")
+
     with torch.no_grad():
-        logging.info("Copy weight directly:")
+        logging.info("MLP copy weight directly:")
         model_snn = get_snn_mlp_model(v_thr=4.0)
         model_snn[1].weight = baseline_copy(model_mlp[1])
         model_snn[3].weight = baseline_copy(model_mlp[4])
         model_snn[5].weight = baseline_copy(model_mlp[7])
         acc_baseline = eval_snn(model_snn, mnist_test)
 
-        logging.info("Copy weight with model based normalization:")
+        logging.info("MLP copy weight with model based normalization:")
         model_snn = get_snn_mlp_model()
         model_snn[1].weight = model_norm(model_mlp[1])
         model_snn[3].weight = model_norm(model_mlp[4])
         model_snn[5].weight = model_norm(model_mlp[7])
         acc_model_norm = eval_snn(model_snn, mnist_test)
 
-        logging.info("Copy weight with data based normalization:")
+        logging.info("MLP copy weight with data based normalization:")
         model_snn = get_snn_mlp_model()
         model_snn[1].weight = data_norm(model_mlp[1])
         model_snn[3].weight = data_norm(model_mlp[4])
         model_snn[5].weight = data_norm(model_mlp[7])
         acc_data_norm = eval_snn(model_snn, mnist_test)
+        
+        logging.info("CNN copy weight directly:")
+        model_snn = get_snn_cnn_model(v_thr=20.0)
+        model_snn[0].weight = baseline_copy(model_cnn[0])
+        model_snn[3].weight = baseline_copy(model_cnn[4])
+        model_snn[7].weight = baseline_copy(model_cnn[9])
+        acc_baseline2 = eval_snn(model_snn, mnist_test)
+
+        logging.info("CNN copy weight with model based normalization:")
+        model_snn = get_snn_cnn_model()
+        model_snn[0].weight = model_norm(model_cnn[0])
+        model_snn[3].weight = model_norm(model_cnn[4])
+        model_snn[7].weight = model_norm(model_cnn[9])
+        acc_model_norm2 = eval_snn(model_snn, mnist_test)
+
+        logging.info("CNN copy weight with data based normalization:")
+        model_snn = get_snn_cnn_model()
+        model_snn[0].weight = data_norm(model_cnn[0])
+        model_snn[3].weight = data_norm(model_cnn[4])
+        model_snn[7].weight = data_norm(model_cnn[9])
+        acc_data_norm2 = eval_snn(model_snn, mnist_test)
+
+    with open("result.json", "w") as f:
+        json.dump({
+            "mlp": { "acc_baseline": acc_baseline, "acc_model_norm": acc_model_norm, "acc_data_norm": acc_data_norm },
+            "cnn": { "acc_baseline": acc_baseline2, "acc_model_norm": acc_model_norm2, "acc_data_norm": acc_data_norm2 },
+        }, f, indent=2)
     
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
-    ax.plot([100 * (1 - x) for x in acc_baseline], label="Baseline (Direct Copy, v_thr = 4.0)", linestyle=":")
-    ax.plot([100 * (1 - x) for x in acc_model_norm], label="Model-Based Normalization", linestyle="--")
-    ax.plot([100 * (1 - x) for x in acc_data_norm], label="Data-Based Normalization", linestyle="-.")
+    ax.plot([100 * (1 - x) for x in acc_baseline], label="MLP Baseline (Direct Copy, v_thr = 4.0)", 
+            linestyle=":", linewidth=2, color="tab:blue")
+    ax.plot([100 * (1 - x) for x in acc_model_norm], label="MLP Model-Based Normalization",
+            linestyle="--", linewidth=2, color="tab:green")
+    ax.plot([100 * (1 - x) for x in acc_data_norm], label="MLP Data-Based Normalization", 
+            linestyle="-.", linewidth=2, color="tab:cyan")
+    ax.plot([100 * (1 - x) for x in acc_baseline2], label="CNN Baseline (Direct Copy, v_thr = 20.0)", 
+            linestyle=":", linewidth=2, color="tab:red")
+    ax.plot([100 * (1 - x) for x in acc_model_norm2], label="CNN Model-Based Normalization", 
+            linestyle="--", linewidth=2, color="tab:orange")
+    ax.plot([100 * (1 - x) for x in acc_data_norm2], label="CNN Data-Based Normalization", 
+            linestyle="-.", linewidth=2, color="tab:pink")
+    ax.set_xscale("log")
     ax.set_xlabel("Time")
     ax.set_yscale("log")
     ax.set_ylabel("Test Error (%)")
     ax.set_title(f"Performance Overview\n"
-              f"MLP (epochs = {EPOCHS}, batch = {BATCH_SIZE}, lr = {LR}, momentum = {MOMENTNUM})\n"
-              f"SNN (timesteps = {TIME}, v_thr = {V_THR}, v_reset = {V_RESET})")
+              f"MLP/CNN Training: epochs = {EPOCHS}, batch = {BATCH_SIZE}, lr = {LR}, momentum = {MOMENTNUM}\n"
+              f"SNN Setup: timesteps = {TIME}, v_thr = {V_THR}, v_reset = {V_RESET}")
     ax.legend()
-    fig.savefig("mlp.png", bbox_inches="tight", dpi=300)
+    fig.savefig("result.png", bbox_inches="tight", dpi=300)
 
     logging.info("Finish!")
