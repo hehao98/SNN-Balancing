@@ -124,7 +124,7 @@ def eval_snn(model_snn, test_data):
             correct_sum[t] += (out_spikes_counter.max(1)[1] == label).float().sum().item()
             test_sum[t] += label.numel()
         functional.reset_net(model_snn)
-    for i in list(range(0, 10)) + list(range(20, 100, 10)):
+    for i in range(0, TIME, TIME // 10):
         logging.info(f"SNN t = {i}:　test_acc = {correct_sum[i] / test_sum[i]:.4f}")
     return [x / y for x, y in zip(correct_sum, test_sum)]
 
