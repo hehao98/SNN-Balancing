@@ -1,8 +1,9 @@
-# Dataset, trained PyTorch models and performance logs
+# Dataset, trained PyTorch models, execution logs, and figures
 data/
 *.pt
 *.json
 *.log
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -3,13 +3,14 @@ import json
 import logging
 import torch
 import torchvision
+import matplotlib.pyplot as plt
 from torch import nn
 from spikingjelly.clock_driven import neuron, functional
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EPOCHS, BATCH_SIZE, LR, MOMENTNUM = 100, 100, 0.1, 0.5
-TIME, V_THR, V_RESET = 100, 1.0, 0.0
+TIME, V_THR, V_RESET = 100, 5.0, 0.0
 
 
 def get_mnist():
@@ -97,6 +98,37 @@ def get_trained_model_mlp(train_data, test_data):
     return model_mlp, perf
 
 
+def baseline_copy(layer: nn.Linear):
+    return nn.Parameter(torch.clone(layer.weight))
+
+
+def model_norm(layer: nn.Linear):
+    """TODO: Implement"""
+    return nn.Parameter(torch.clone(layer.weight))
+
+
+def data_norm(layer: nn.Linear):
+    """TODO: Implement"""
+    return nn.Parameter(torch.clone(layer.weight))
+
+
+def eval_snn(model_snn, test_data):
+    test_sum = [0] * TIME
+    correct_sum = [0] * TIME
+    for img, label in test_data:
+        for t in range(TIME):
+            if t == 0:
+                out_spikes_counter = model_snn(img)
+            else:
+                out_spikes_counter += model_snn(img)
+            correct_sum[t] += (out_spikes_counter.max(1)[1] == label).float().sum().item()
+            test_sum[t] += label.numel()
+        functional.reset_net(model_snn)
+    for i in list(range(0, 10)) + list(range(20, 100, 10)):
+        logging.info(f"SNN t = {i}:　test_acc = {correct_sum[i] / test_sum[i]:.4f}")
+    return [x / y for x, y in zip(correct_sum, test_sum)]
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         format="%(asctime)s (Process %(process)d) [%(levelname)s] %(filename)s:%(lineno)d %(message)s",
@@ -117,20 +149,34 @@ if __name__ == "__main__":
         nn.Linear(1200, 10)).to(DEVICE)
 
     with torch.no_grad():
-        model_snn[1].weight = nn.Parameter(torch.clone(model_mlp[1].weight))
-        model_snn[3].weight = nn.Parameter(torch.clone(model_mlp[4].weight))
-        model_snn[5].weight = nn.Parameter(torch.clone(model_mlp[7].weight))
+        logging.info("Copy weight directly:")
+        model_snn[1].weight = baseline_copy(model_mlp[1])
+        model_snn[3].weight = baseline_copy(model_mlp[4])
+        model_snn[5].weight = baseline_copy(model_mlp[7])
+        acc_baseline = eval_snn(model_snn, mnist_test)
 
-        test_sum = 0
-        correct_sum = 0
-        for img, label in mnist_test:
-            for t in range(TIME):
-                if t == 0:
-                    out_spikes_counter = model_snn(img)
-                else:
-                    out_spikes_counter += model_snn(img)
-            correct_sum += (out_spikes_counter.max(1)[1] == label).float().sum().item()
-            test_sum += label.numel()
-            functional.reset_net(model_snn)
-        logging.info(f"SNN test_acc = {correct_sum / test_sum:.4f}")
+        logging.info("Copy weight with model based normalization:")
+        model_snn[1].weight = model_norm(model_mlp[1])
+        model_snn[3].weight = model_norm(model_mlp[4])
+        model_snn[5].weight = model_norm(model_mlp[7])
+        acc_model_norm = eval_snn(model_snn, mnist_test)
+
+        logging.info("Copy weight with data based normalization:")
+        model_snn[1].weight = data_norm(model_mlp[1])
+        model_snn[3].weight = data_norm(model_mlp[4])
+        model_snn[5].weight = data_norm(model_mlp[7])
+        acc_data_norm = eval_snn(model_snn, mnist_test)
     
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    ax.plot(acc_baseline, label="Baseline (Direct Copy)", linestyle=":")
+    ax.plot(acc_model_norm, label="Model-Based Normalization", linestyle="--")
+    ax.plot(acc_data_norm, label="Data-Based Normalization", linestyle="-.")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Test Accuracy")
+    ax.set_title(f"Performance Overview\n"
+              f"MLP (epochs = {EPOCHS}, batch = {BATCH_SIZE}, lr = {LR}, momentum = {MOMENTNUM})\n"
+              f"SNN (timesteps = {TIME}, v_thr = {V_THR}, v_reset = {V_RESET})")
+    ax.legend()
+    fig.savefig("mlp.png", bbox_inches="tight", dpi=300)
+
+    logging.info("Finish!")
