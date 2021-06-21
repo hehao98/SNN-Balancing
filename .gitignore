@@ -1,9 +1,7 @@
 # Dataset, trained PyTorch models, execution logs, and figures
 data/
+.vscode/
 *.pt
-*.json
-*.log
-*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
